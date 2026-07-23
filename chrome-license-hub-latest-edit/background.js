@@ -13,6 +13,77 @@ const DEACTIVATE_URL = () => api("/api/public/license/deactivate");
 const TRANSFORM_URL = () => api("/api/public/license/transform");
 const HEALTH_URL = () => api("/api/public/health"); 
 
+// ==========================================
+// 🛡️ منظومة التشفير (VibeCoding Dynamic Cipher)
+// ==========================================
+const KEY_A_HEX = 'e1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2';
+const KEY_B_HEX = 'f1e0d9c8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2e1f0';
+
+function getEncryptionKeyHex(timestamp) {
+  const date = new Date(Number(timestamp));
+  const isMinEven = date.getUTCMinutes() % 2 === 0;
+  const isSecEven = date.getUTCSeconds() % 2 === 0;
+  return (isMinEven === isSecEven) ? KEY_A_HEX : KEY_B_HEX;
+}
+
+const hexToBuf = hex => new Uint8Array(hex.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
+const bufToHex = buf => Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+
+async function importKey(hexKey) {
+  return await crypto.subtle.importKey("raw", hexToBuf(hexKey), { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+}
+
+async function encryptData(text, keyHex) {
+  const key = await importKey(keyHex);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encoded = new TextEncoder().encode(text);
+  const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv: iv }, key, encoded);
+  const cipherBytes = new Uint8Array(ciphertext);
+  const encryptedHex = bufToHex(cipherBytes.slice(0, -16));
+  const tagHex = bufToHex(cipherBytes.slice(-16));
+  return `${bufToHex(iv)}:${encryptedHex}:${tagHex}`;
+}
+
+async function decryptData(encStr, keyHex) {
+  const key = await importKey(keyHex);
+  const [ivHex, cipherHex, tagHex] = encStr.split(':');
+  const iv = hexToBuf(ivHex);
+  const encryptedBytes = hexToBuf(cipherHex + tagHex);
+  const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv: iv }, key, encryptedBytes);
+  return new TextDecoder().decode(decrypted);
+}
+
+// دالة الاتصال المشفرة كلياً
+async function secureFetch(url, bodyObj) {
+  const epoch = Date.now().toString();
+  const keyHex = getEncryptionKeyHex(epoch);
+  const bodyStr = JSON.stringify(bodyObj);
+  const encryptedPayload = await encryptData(bodyStr, keyHex);
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-vibe-epoch": epoch
+    },
+    body: JSON.stringify({ payload: encryptedPayload })
+  });
+
+  if (!res.ok) throw new Error("Network error");
+
+  const replyEpoch = res.headers.get("x-vibe-reply");
+  if (!replyEpoch) return res.json(); 
+
+  const replyKeyHex = getEncryptionKeyHex(replyEpoch);
+  const resData = await res.json();
+  
+  if (resData.payload) {
+    const decryptedStr = await decryptData(resData.payload, replyKeyHex);
+    return JSON.parse(decryptedStr);
+  }
+  return resData;
+}
+
 const VERSION = chrome.runtime.getManifest().version;
 
 let serverIsOnline = false; 
@@ -146,18 +217,12 @@ async function validateLicense() {
 
   try {
     const fp = await ensureStableFingerprint();
-    const res = await fetch(API_URL(), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ 
-        license_key, 
-        device_hash: fp.hash, 
-        components: fp.components,
-        usage_count: injection_count || 0 
-      }),
-    });
-    
-    const data = await res.json();
+    const data = await secureFetch(API_URL(), { 
+      license_key, 
+      device_hash: fp.hash, 
+      components: fp.components,
+      usage_count: injection_count || 0 
+    });    
     if (data.valid) {
       await chrome.storage.local.set({ 
         license_cache: data,
@@ -179,17 +244,11 @@ async function ensureTrialLicense() {
     if (license_cache && license_cache.valid) return { valid: false, reason: "license_already_active" };
 
     const fp = await ensureStableFingerprint();
-    const res = await fetch(AUTO_TRIAL_URL(), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ 
-        device_hash: fp.hash, 
-        components: fp.components,
-        usage_count: injection_count || 0 
-      }),
+    const data = await secureFetch(AUTO_TRIAL_URL(), { 
+      device_hash: fp.hash, 
+      components: fp.components,
+      usage_count: injection_count || 0 
     });
-    
-    const data = await res.json();
     if (data && data.ok && data.license_key) {
       const cache = {
         valid: true,
@@ -285,18 +344,12 @@ if (message.type === "GET_STATE") {
         if (!license_key) return sendResponse({ ok: false, reason: "no_key" });
         
         const fp = await ensureStableFingerprint();
-        const res = await fetch(TRANSFORM_URL(), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            license_key,
-            device_id: fp.hash,
-            prompt: message.prompt || "",
-            strategy: "fix_error"
-          }),
+        const data = await secureFetch(TRANSFORM_URL(), {
+          license_key,
+          device_id: fp.hash,
+          prompt: message.prompt || "",
+          strategy: "fix_error"
         });
-        
-        const data = await res.json();
         sendResponse(data);
       } catch (e) {
         sendResponse({ ok: false, reason: "network_error" });
