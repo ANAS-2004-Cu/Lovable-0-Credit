@@ -70,16 +70,16 @@
     });
   }
 
-  // تضمين كافة الحقول التي ينتظرها Lovable لمنع تعطل الواجهة
+// تضمين كافة الحقول مع الحفاظ على المعرفات الأصلية السليمة (id, client_id, etc..)
   function applyServerFields(baseBody, fields) {
     return Object.assign({}, baseBody, fields, {
       thread_id: baseBody.thread_id || "main",
       view: baseBody.view || "preview",
       view_description: baseBody.view_description || "The user is currently viewing the preview. ",
       current_page: baseBody.current_page || "/",
-      current_viewport_width: window.innerWidth || 1200,
-      current_viewport_height: window.innerHeight || 800,
-      current_viewport_dpr: window.devicePixelRatio || 1,
+      current_viewport_width: baseBody.current_viewport_width || window.innerWidth || 1200,
+      current_viewport_height: baseBody.current_viewport_height || window.innerHeight || 800,
+      current_viewport_dpr: baseBody.current_viewport_dpr || window.devicePixelRatio || 1,
       session_replay: baseBody.session_replay || "",
       client_logs: baseBody.client_logs || [],
       network_requests: baseBody.network_requests || [],
@@ -88,6 +88,10 @@
       files: baseBody.files || [],
       selected_elements: baseBody.selected_elements || [],
       optimisticImageUrls: baseBody.optimisticImageUrls || [],
+      
+      // ضمان وجود الحقول الأمنية الجديدة المطلوبة
+      client_id: baseBody.client_id,
+      user_timezone: baseBody.user_timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
     });
   }
 
